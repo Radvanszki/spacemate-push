@@ -3,32 +3,48 @@
 const te=s=>new TextEncoder().encode(s);
 const b64uBytes=b=>{const r=atob((b+'='.repeat((4-b.length%4)%4)).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from(r,c=>c.charCodeAt(0))};
 const b64u=u=>btoa(String.fromCharCode(...new Uint8Array(u))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-const MISS_H=10,MAXN=3,GAP=90*6e4,OPENW=10*6e4,PER_RUN=20; // PER_RUN: az ingyenes csomag ~50 kérés/futás korlátja miatt
+// GAP: ugyanannak a lénynek két push között legalább ennyi; SPACE: bármelyik két push között legalább ennyi (hogy a másik lény pushának szövege ne írja felül az előzőét, mielőtt az megérkezne)
+// LOOK: a most lejáró mellé a következő 30 percben lejáró szükségletek is bekerülnek ugyanabba a pushba (0 = kikapcsolva); PER_RUN: az ingyenes csomag ~50 kérés/futás korlátja miatt
+const MISS_H=10,GAP=90*6e4,SPACE=10*6e4,OPENW=10*6e4,PER_RUN=20,LOOK=30*6e4;
+const REPMAX=3,REP=2*36e5; // egy szükségletről legfeljebb REPMAX értesítés, az ismétlések között REP; a gondozás új esedékességet ad, azzal a számláló nullázódik
+// a `sent` egy szükségletre: {d: az esedékesség, n: hány értesítés ment ki, t: az utolsó ideje}; a régi (szám) alakot kész (n=REPMAX) állapotnak vesszük
+const sx=(v,d)=>v&&typeof v=='object'?(v.d===d?v:{d,n:0,t:0}):(v===d?{d,n:REPMAX,t:0}:{d,n:0,t:0});
 const HOSTS=[/(^|\.)push\.apple\.com$/,/^fcm\.googleapis\.com$/,/(^|\.)push\.services\.mozilla\.com$/,/(^|\.)notify\.windows\.com$/];
 const okEp=ep=>{try{const u=new URL(ep);return u.protocol=='https:'&&HOSTS.some(r=>r.test(u.hostname))}catch{return false}};
 
-const asleep=(t,tz)=>{const h=new Date(t-tz*6e4).getUTCHours();return h>=23||h<7};   // 23–7 helyi idő: nem küldünk
-const wake=(t,tz)=>{let x=t;for(let i=0;i<60&&asleep(x,tz);i++)x+=18e5;return x};
+const QUIET=false; // true: 23–7 helyi idő között nem küldünk; false: éjjel is jöhet (a "Ne zavarj" kapcsolóval némítható)
+const asleep=(t,tz)=>QUIET&&(()=>{const h=new Date(t-tz*6e4).getUTCHours();return h>=23||h<7})();
+const wake=(t,tz)=>{if(!asleep(t,tz))return t;const l=new Date(t-tz*6e4);l.setUTCHours(7,0,0,0);let x=l.getTime()+tz*6e4;if(x<=t)x+=864e5;return x}; // pontosan 07:00 helyi idő
 
-// a legkorábbi időpont, amikor ennek a sornak szólnia kell (a szünetekkel és az időközzel együtt)
-function planNxt(r,dues,sent){let m=Infinity;
-  if(r.n<MAXN)for(const c in dues)for(const k in dues[c]){const d=dues[c][k];if(sent[c+':'+k]!==d&&d<m)m=d}
-  if(!r.ms&&r.seen+MISS_H*36e5<m)m=r.seen+MISS_H*36e5;
+// a legkorábbi időpont, amikor ennek a sornak szólnia kell (lényenként külön számolva, a szünetekkel és az időközzel együtt)
+function planNxt(r,dues,sent,lc){let m=Infinity;lc=lc||{};
+  const base=Math.max(r.lp?r.lp+SPACE:0,r.seen+OPENW);
+  for(const c in dues){let e=Infinity;for(const k in dues[c]){const d=dues[c][k],s=sx(sent[c+':'+k],d);
+      const t=s.n==0?d:s.n<REPMAX?s.t+REP:Infinity;if(t<e)e=t}
+    if(isFinite(e))m=Math.min(m,Math.max(e,base,lc[c]?lc[c]+GAP:0))}
+  if(!r.ms)m=Math.min(m,Math.max(r.seen+MISS_H*36e5,base,r.lp?r.lp+GAP:0));
   if(!isFinite(m))return 0;
-  m=Math.max(m,r.lp?r.lp+GAP:0,r.seen+OPENW);
   return asleep(m,r.tz)?wake(m,r.tz):m}
 
-// mit küldjünk most (vagy semmit)
+// mit küldjünk most (vagy semmit): egy lénynek egy push, abban az összes esedékes szükséglete
 function decide(r,now){
-  let dues={},sent={};try{dues=JSON.parse(r.dues||'{}');sent=JSON.parse(r.sent||'{}')}catch{}
-  const can=!asleep(now,r.tz)&&(!r.lp||now-r.lp>=GAP)&&now-r.seen>=OPENW;
-  let cand=null;
-  if(r.n<MAXN)for(const c in dues)for(const k in dues[c]){const d=dues[c][k];if(d<=now&&sent[c+':'+k]!==d&&(!cand||d<cand.d))cand={c,k,d}}
-  if(can&&cand){const s2={...sent,[cand.c+':'+cand.k]:cand.d},r2={...r,n:r.n+1,lp:now};
-    return {send:{c:cand.c,k:cand.k},upd:{n:r2.n,lp:now,sent:JSON.stringify(s2),ms:r.ms,msg:JSON.stringify({c:cand.c,k:cand.k}),nxt:planNxt(r2,dues,s2)}}}
-  if(can&&!r.ms&&now-r.seen>=MISS_H*36e5){const c=r.last||'zizi',r2={...r,ms:1,lp:now};
-    return {send:{c,k:'miss'},upd:{n:r.n,lp:now,sent:JSON.stringify(sent),ms:1,msg:JSON.stringify({c,k:'miss'}),nxt:planNxt(r2,dues,sent)}}}
-  return {send:null,upd:{nxt:planNxt(r,dues,sent)}}}
+  if(r.dnd)return {send:null,upd:{nxt:0}}; // [DND] Ne zavarj: nem küldünk
+  let dues={},sent={},lc={};try{dues=JSON.parse(r.dues||'{}');sent=JSON.parse(r.sent||'{}');lc=JSON.parse(r.lpc||'{}')}catch{}
+  const can=!asleep(now,r.tz)&&(!r.lp||now-r.lp>=SPACE)&&now-r.seen>=OPENW;
+  // lényenként: az első értesítésre váró (lejárt, vagy a LOOK időn belül lejáró) és az ismétlésre váró (REP telt el) szükségletek; legalább egynek tényleg esedékesnek kell lennie
+  let best=null;
+  for(const c in dues){if(lc[c]&&now-lc[c]<GAP)continue;
+    const cs=[];let due=Infinity;
+    for(const k in dues[c]){const d=dues[c][k],s=sx(sent[c+':'+k],d);
+      if(s.n==0){if(d<=now+LOOK)cs.push({c,k,d,s});if(d<=now&&d<due)due=d}
+      else if(s.n<REPMAX&&s.t+REP<=now){cs.push({c,k,d,s});if(s.t+REP<due)due=s.t+REP}}
+    if(isFinite(due)&&(!best||due<best.due))best={due,cs}}
+  if(can&&best){const s2={...sent},cs=best.cs;for(const x of cs)s2[x.c+':'+x.k]={d:x.d,n:x.s.n+1,t:now};
+    const c=cs[0].c,lc2={...lc,[c]:now},r2={...r,n:r.n+1,lp:now};
+    return {send:{c,k:cs[0].k},upd:{n:r2.n,lp:now,sent:JSON.stringify(s2),ms:r.ms,msg:JSON.stringify({i:cs.map(x=>[x.c,x.k])}),lpc:JSON.stringify(lc2),nxt:planNxt(r2,dues,s2,lc2)}}}
+  if(can&&!r.ms&&now-r.seen>=MISS_H*36e5&&(!r.lp||now-r.lp>=GAP)){const c=r.last||'zizi',r2={...r,ms:1,lp:now};
+    return {send:{c,k:'miss'},upd:{n:r.n,lp:now,sent:JSON.stringify(sent),ms:1,msg:JSON.stringify({c,k:'miss'}),lpc:JSON.stringify(lc),nxt:planNxt(r2,dues,sent,lc)}}}
+  return {send:null,upd:{nxt:planNxt(r,dues,sent,lc)}}}
 
 async function vapidJwt(env,aud){
   const pub=b64uBytes(env.VAPID_PUBLIC);
@@ -45,14 +61,14 @@ async function sendPush(env,ep){
 
 async function run(env){
   const now=Date.now();
-  const {results}=await env.DB.prepare('SELECT * FROM push_subs WHERE nxt>0 AND nxt<=? ORDER BY nxt LIMIT ?').bind(now,PER_RUN).all();
+  const {results}=await env.DB.prepare('SELECT * FROM push_subs WHERE nxt>0 AND nxt<=? AND COALESCE(dnd,0)=0 ORDER BY nxt LIMIT ?').bind(now,PER_RUN).all();
   for(const r of results||[]){
     const d=decide(r,now);
     if(d.send){
       const x=await sendPush(env,r.ep);
       if(x.gone){await env.DB.prepare('DELETE FROM push_subs WHERE id=?').bind(r.id).run();continue}
       if(!x.ok){await env.DB.prepare('UPDATE push_subs SET nxt=? WHERE id=?').bind(now+15*6e4,r.id).run();continue} // átmeneti hiba: 15 perc múlva újra
-      const u=d.upd;await env.DB.prepare('UPDATE push_subs SET n=?,lp=?,sent=?,ms=?,msg=?,nxt=? WHERE id=?').bind(u.n,u.lp,u.sent,u.ms,u.msg,u.nxt,r.id).run()
+      const u=d.upd;await env.DB.prepare('UPDATE push_subs SET n=?,lp=?,sent=?,ms=?,msg=?,nxt=?,lpc=? WHERE id=?').bind(u.n,u.lp,u.sent,u.ms,u.msg,u.nxt,u.lpc,r.id).run()
     }else if(d.upd.nxt!==r.nxt){await env.DB.prepare('UPDATE push_subs SET nxt=? WHERE id=?').bind(d.upd.nxt,r.id).run()}
   }
   // takarítás: 90 napja nem látott sor törlése (naponta egyszer, 03:00 UTC körül)
