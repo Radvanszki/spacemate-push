@@ -1,0 +1,16 @@
+name = "spacemate-push"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+[triggers]
+crons = ["*/10 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "theta-usage"
+database_id = "IDE-MÁSOLD-A-theta-usage-D1-AZONOSÍTÓJÁT"
+
+[vars]
+VAPID_PUBLIC = "IDE-A-VAPID_PUBLIC"
+VAPID_SUB = "https://spacemate.radvanszki.com"
+# VAPID_D titok: wrangler secret put VAPID_D   (vagy a Cloudflare felületen: Settings → Variables → Secret)
