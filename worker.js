@@ -61,5 +61,16 @@ async function run(env){
 
 export default{
   async scheduled(ev,env,ctx){ctx.waitUntil(run(env))},
-  async fetch(){return new Response('spacemate-push ok')}
+  async fetch(req,env){
+    const u=new URL(req.url);
+    // [TESZT] kézi push egyedi szöveggel: /test?k=ADMIN_KEY&to=QP9o9&t=Cím&b=Szöveg  (to = a push-cím elejének egy darabja; a szabályokat nem veszi figyelembe)
+    if(u.pathname=='/test'){
+      const k=u.searchParams.get('k')||'',to=(u.searchParams.get('to')||'').replace(/[^A-Za-z0-9_-]/g,'');
+      if(!env.ADMIN_KEY||k!==env.ADMIN_KEY||to.length<4)return new Response('nem',{status:403});
+      const {results}=await env.DB.prepare('SELECT id,ep FROM push_subs WHERE ep LIKE ? LIMIT 5').bind('https://%/'+to+'%').all();
+      const msg=JSON.stringify({t:(u.searchParams.get('t')||'Teszt').slice(0,60),b:(u.searchParams.get('b')||'Ez egy tesztértesítés.').slice(0,200)});
+      const out=[];
+      for(const r of results||[]){await env.DB.prepare('UPDATE push_subs SET msg=? WHERE id=?').bind(msg,r.id).run();const x=await sendPush(env,r.ep);out.push({cim:r.ep.slice(0,45),...x})}
+      return new Response(JSON.stringify({talalat:out.length,out},null,1),{headers:{'content-type':'application/json'}})}
+    return new Response('spacemate-push ok')}
 };
