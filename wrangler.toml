@@ -8,9 +8,9 @@ crons = ["*/10 * * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "theta-usage"
-database_id = "IDE-MÁSOLD-A-theta-usage-D1-AZONOSÍTÓJÁT"
+database_id = "2a0fb1cf-5ed3-4b49-8302-d28325be5f4d"
 
 [vars]
-VAPID_PUBLIC = "IDE-A-VAPID_PUBLIC"
+VAPID_PUBLIC = "BL2Xbc01YWqXCcfexmLN6kwCe2lw2CCVky3J7vrodMqEpPcPw2fU4UZVlR474Y75byvaNgsv640u0FAiIvypmvM"
 VAPID_SUB = "https://spacemate.radvanszki.com"
 # VAPID_D titok: wrangler secret put VAPID_D   (vagy a Cloudflare felületen: Settings → Variables → Secret)
